@@ -120,7 +120,7 @@ class TraceViewer:
         self.ax_plot.axhline(0, color="gray", lw=0.5, ls="--")
         self.cursor = self.ax_plot.axvline(self.t_min[0], color="k", lw=1.0, zorder=5)
         self.ax_plot.set_xlabel("Time (min)")
-        self.ax_plot.set_ylabel("ΔF/F₀")
+        self.ax_plot.set_ylabel(r"$\Delta F/F_0$")
         self.ax_plot.set_ylim(-0.2, 1.0)
 
         # slider

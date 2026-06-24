@@ -5,6 +5,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
+import matplotlib.patheffects as pe
+
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.size": 12
+})
+
 # NOTE: backend is chosen by the entry point — analyze.py forces "Agg" for
 # headless batch rendering; the interactive viewer leaves the GUI backend.
 
@@ -32,19 +40,71 @@ def _epoch_labels(ax, eps):
                 fontsize=7, color="black")
 
 
-def plot_wholefield(path, fid, t_min, wf_dff, eps):
-    fig, ax = plt.subplots(figsize=(11, 4))
-    ax.plot(t_min[3:], wf_dff[3:], color="steelblue", lw=1.3, zorder=3)
-    ax.axhline(0, color="gray", lw=0.5, ls="--")
-    vmax = max(v for *_, v, _, _ in eps)
+def _treatment_bars(ax, eps):
+
+    tr = ax.get_xaxis_transform()
+
     for (s, e, v, dc, lab) in eps:
-        ax.axvspan(s, e, color=cm.autumn_r(0.15 + 0.7 * v / vmax), alpha=0.35, zorder=1)
-    _epoch_labels(ax, eps)
-    ax.set_title(f"File {fid} — HMC3 whole-field ΔF/F₀ (LIFUS dose-response)")
+
+        color = "indigo"
+
+        ax.plot(
+            [s, e],
+            [1.03, 1.03],
+            transform=tr,
+            color=color,
+            linewidth=4,
+            clip_on=False,
+            path_effects=[
+                pe.Stroke(linewidth=5, foreground="black"),
+                pe.Normal()
+            ]
+        )
+
+        ax.text(
+            (s + e) / 2,
+            1.05,
+            lab,
+            transform=tr,
+            ha="center",
+            va="bottom",
+            fontsize=8
+        )
+
+def plot_wholefield(path, fid, t_min, wf_dff, eps):
+
+    fig, ax = plt.subplots(figsize=(10,5))
+
+    ax.plot(
+        t_min,
+        wf_dff,
+        color="darkslateblue",
+        linewidth=2.5
+    )
+
+    ax.axhline(
+        0,
+        color="gray",
+        linewidth=0.5,
+        linestyle="--"
+    )
+
     ax.set_xlabel("Time (min)")
-    ax.set_ylabel("ΔF/F₀")
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    ax.set_ylabel(r"$\Delta F/F_0$")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    _treatment_bars(ax, eps)
+
+    plt.tight_layout()
+
+    fig.savefig(
+        path,
+        dpi=300,
+        bbox_inches="tight"
+    )
+
     plt.close(fig)
 
 
@@ -65,8 +125,8 @@ def plot_cells(path, fid, proj, labels, c_dff, t_min, eps, ncells):
         for (s, e, v, dc, lab) in eps:
             a1.axvline(s, color="cyan", lw=0.6, ls=":")
             a1.text(s, ncells, lab, color="cyan", fontsize=6, va="bottom")
-        fig.colorbar(im, ax=a1, label="ΔF/F₀", fraction=0.04)
-    a1.set_title("Per-cell ΔF/F₀")
+        fig.colorbar(im, ax=a1, label=r"$\Delta F/F_0$", fraction=0.04)
+    a1.set_title(r" Per cell $\Delta F/F_0$")
     a1.set_xlabel("Time (min)")
     a1.set_ylabel("Cell (sorted by peak)")
     fig.tight_layout()
@@ -75,23 +135,72 @@ def plot_cells(path, fid, proj, labels, c_dff, t_min, eps, ncells):
 
 
 def plot_celltraces(path, fid, t_min, c_dff, eps, ncells):
-    fig, ax = plt.subplots(figsize=(11, 4.5))
-    vmax = max(v for *_, v, _, _ in eps)
-    for (s, e, v, dc, lab) in eps:
-        ax.axvspan(s, e, color=cm.autumn_r(0.15 + 0.7 * v / vmax), alpha=0.30, zorder=0)
-    for c in range(ncells):
-        ax.plot(t_min[3:], c_dff[c, 3:], color="black", lw=0.4, alpha=1, zorder=1)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
     if ncells:
-        ax.plot(t_min[3:], c_dff.mean(axis=0)[3:], color="crimson", lw=2.0,
-                label=f"mean of {ncells} cells", zorder=3)
-    ax.axhline(0, color="gray", lw=0.5, ls="--")
-    _epoch_labels(ax, eps)
-    ax.set_title(f"File {fid} — HMC3 per-cell ΔF/F₀ traces + mean")
+
+        mean_trace = c_dff.mean(axis=0)
+
+        sem_trace = (
+            c_dff.std(axis=0, ddof=1)
+            / np.sqrt(ncells)
+        )
+
+        ax.fill_between(
+            t_min,
+            mean_trace - sem_trace,
+            mean_trace + sem_trace,
+            color="mediumpurple",
+            alpha=0.30,
+            zorder=2
+        )
+
+        for c in range(ncells):
+
+            ax.plot(
+                t_min,
+                c_dff[c],
+                color="thistle",
+                linewidth=1,
+                alpha=0.7,
+                zorder=1
+            )
+
+        ax.plot(
+            t_min,
+            mean_trace,
+            color="darkslateblue",
+            linewidth=3,
+            zorder=3,
+            label=r"mean $\pm$ SEM (n={ncells})"
+        )
+
+    ax.axhline(
+        0,
+        color="gray",
+        linewidth=0.5,
+        linestyle="--"
+    )
+
     ax.set_xlabel("Time (min)")
-    ax.set_ylabel("ΔF/F₀")
-    ax.legend(fontsize=8, loc="upper left")
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    ax.set_ylabel(r"$\Delta F/F_0$")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    _treatment_bars(ax, eps)
+
+    ax.legend(frameon=False)
+
+    plt.tight_layout()
+
+    fig.savefig(
+        path,
+        dpi=300,
+        bbox_inches="tight"
+    )
+
     plt.close(fig)
 
 
@@ -113,12 +222,12 @@ def plot_dose_pooled(path, pool_rows, ncell_tot, nfile_tot, extra="",
         a0.scatter(jx, r["peaks"], s=4, color="0.4", alpha=0.35, zorder=2)
     a0.errorbar(pos, [r["mean_peak_dff"] for r in pool_rows],
                 yerr=[r["sem_peak_dff"] for r in pool_rows], fmt="-o",
-                color="crimson", lw=2, capsize=3, zorder=3, label="mean ± SEM")
+                color="crimson", lw=2, capsize=3, zorder=3, label=r"mean $\pm$ SEM")
     tr = a0.get_xaxis_transform()
     for r in pool_rows:
         a0.text(P0(r["dose"]), 0.99, f"n={r['n_cells']}", transform=tr,
                 ha="center", va="top", fontsize=7, color="0.3")
-    a0.set_ylabel("Single-cell peak ΔF/F₀")
+    a0.set_ylabel(r"Single-cell peak $\Delta F/F_0$")
     a0.set_title("Pooled single-cell response amplitude")
     a0.legend(fontsize=8)
     a0.grid(alpha=0.3)
@@ -134,9 +243,11 @@ def plot_dose_pooled(path, pool_rows, ncell_tot, nfile_tot, extra="",
     a1.set_ylim(bottom=0)
     a1.grid(alpha=0.3)
 
-    fig.suptitle(f"HMC3 microglia — pooled single-cell LIFUS dose-response "
-                 f"({ncell_tot} cell-epochs, {nfile_tot} files, DC {dc}%){extra}",
-                 fontsize=12)
+    fig.suptitle(
+    f"HMC3 microglia -- pooled single-cell response and recruitment vs dose, "
+    f"by duty cycle ({ncell_tot} cell-epochs, {nfile_tot} files, DC {dc}%){extra}",
+    fontsize=12)
+    
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -151,9 +262,9 @@ def plot_by_dc(path, by_dc, extra="",
     dcol = {dc: cmap(i) for i, dc in enumerate(dcs)}
 
     panels = [
-        ("mean_peak_dff", "sem_peak_dff", "Single-cell peak ΔF/F₀",
+        ("mean_peak_dff", "sem_peak_dff", r"Single-cell peak $\Delta F/F_0$",
          "Response amplitude (peak)"),
-        ("mean_responder_auc", "sem_responder_auc", "Responder AUC (ΔF/F₀·s)",
+        ("mean_responder_auc", "sem_responder_auc", r"Responder AUC ($\Delta F/F_0 \cdot s$)",
          "Response integral (responders only)"),
         ("frac_responding", "sem_frac", "Fraction responding cells",
          "Recruitment"),
@@ -175,7 +286,7 @@ def plot_by_dc(path, by_dc, extra="",
         ax.grid(alpha=0.3)
         ax.legend(title="duty cycle", fontsize=8)
 
-    fig.suptitle("HMC3 microglia — pooled single-cell response & recruitment "
+    fig.suptitle("HMC3 microglia - pooled single-cell response and recruitment "
                  f"vs dose, by duty cycle{extra}", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
@@ -207,7 +318,7 @@ def plot_latency(path, lat_rows, extra="",
             ax.scatter(jx, r[key], s=5, color="0.4", alpha=0.35, zorder=2)
         ax.errorbar(pos, [r[mk] for r in lat_rows], yerr=[r[sk] for r in lat_rows],
                     fmt="-o", color=line, lw=2, capsize=3, zorder=3,
-                    label="mean ± SEM")
+                    label=r"mean $\pm$ SEM")
         tr = ax.get_xaxis_transform()
         for r in lat_rows:
             ax.text(P(r["dose"]), 0.99, f"n={r['n_cells']}", transform=tr,
@@ -218,7 +329,7 @@ def plot_latency(path, lat_rows, extra="",
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
 
-    fig.suptitle("HMC3 microglia — responder latency from stimulation onset "
+    fig.suptitle("HMC3 microglia - responder latency from stimulation onset "
                  f"(pooled single cells, DC {dc}%){extra}", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
@@ -235,9 +346,9 @@ def plot_latency_byfile(path, lat_rows, file_ids, extra="",
 
     panels = [
         (a0, "file_onset", "mean_onset_s", "sem_onset_s",
-         "Per-file mean onset latency (s)", "Onset latency — file as replicate"),
+         "Per-file mean onset latency (s)", "Onset latency - file as replicate"),
         (a1, "file_peak", "mean_peak_s", "sem_peak_s",
-         "Per-file mean time-to-peak (s)", "Time-to-peak — file as replicate"),
+         "Per-file mean time-to-peak (s)", "Time-to-peak - file as replicate"),
     ]
     for ax, key, mk, sk, ylab, title in panels:
         P = _dose_axis(ax, xs, log, dose_label)
@@ -262,7 +373,7 @@ def plot_latency_byfile(path, lat_rows, file_ids, extra="",
                for f in file_ids]
     a0.legend(fontsize=8, loc="upper left")
     a1.legend(handles=handles, fontsize=7, title="prep", ncol=2)
-    fig.suptitle("HMC3 microglia — responder latency from onset, file as replicate "
+    fig.suptitle("HMC3 microglia - responder latency from onset, file as replicate "
                  f"(each dish weighs equally, DC {dc}%){extra}", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
@@ -291,8 +402,8 @@ def plot_dose_byfile(path, byfile_rows, file_ids, extra="",
     for r in byfile_rows:
         a0.text(P0(r["dose"]), 0.99, f"N={r['n_files']}", transform=tr,
                 ha="center", va="top", fontsize=7, color="0.3")
-    a0.set_ylabel("Per-file mean single-cell peak ΔF/F₀")
-    a0.set_title("Dose-response — file as replicate (amplitude)")
+    a0.set_ylabel(r"Per-file mean single-cell peak $\Delta F/F_0$")
+    a0.set_title("Dose-response - file as replicate (amplitude)")
     a0.legend(fontsize=8)
     a0.grid(alpha=0.3)
 
@@ -307,14 +418,14 @@ def plot_dose_byfile(path, byfile_rows, file_ids, extra="",
         a1.text(P1(r["dose"]), r["mean_frac_responding"], f" N={r['n_files']}",
                 fontsize=7, va="bottom", color="0.3")
     a1.set_ylabel("Responding fraction")
-    a1.set_title("Responding fraction — file as replicate")
+    a1.set_title("Responding fraction - file as replicate")
     a1.set_ylim(bottom=0)
     a1.grid(alpha=0.3)
 
     handles = [plt.Line2D([], [], marker="o", ls="", color=fcol[f], label=f"File {f}")
                for f in file_ids]
     a1.legend(handles=handles, fontsize=7, title="prep", ncol=2)
-    fig.suptitle("HMC3 microglia — dose-response with file as replicate unit "
+    fig.suptitle("HMC3 microglia - dose-response with file as replicate unit "
                  f"(each dish weighs equally, DC {dc}%){extra}", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
