@@ -31,6 +31,7 @@ from matplotlib.widgets import Button, LassoSelector
 from scipy import ndimage as ndi
 
 from .io import load_tif, truncate
+from .dyes import DYES, load_recording
 from .segmentation import (compact_labels, load_or_segment, manual_roi_path,
                            segment_cells)
 
@@ -43,7 +44,7 @@ class ROIEditor:
         self.cfg = cfg
         self.fid = str(fid)
 
-        frames, _t = load_tif(cfg.data_dir / f"{self.fid}.TIF")
+        _stacks, frames, _wf, _t = load_recording(DYES[cfg.dye], cfg.data_dir, self.fid)
         if self.fid in cfg.truncate_min:
             frames, _t = truncate(frames, _t, cfg.truncate_min[self.fid])
         self.frames = frames

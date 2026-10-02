@@ -8,6 +8,10 @@ from skimage.filters import gaussian, threshold_otsu
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_opening
 
+# Repo root = two levels above src/calcium/ (independent of where the raw data
+# lives, so sessions with data_dir outside the repo root still find rois/).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def segment_cells(frames, min_area=1, max_area=4000):
     """Otsu on the temporal-mean projection -> labelled ROIs.
@@ -43,14 +47,16 @@ def manual_roi_path(cfg, fid) -> Path:
     Kept under ``rois/`` at the repo root with a flat ``<session>_<fid>.npy``
     name (a per-session subdir would be caught by the ``2026*/`` gitignore).
     """
-    return cfg.data_dir.parent / "rois" / f"{cfg.name}_{fid}.npy"
+    return REPO_ROOT / "rois" / f"{cfg.name}_{fid}.npy"
 
 
 def load_or_segment(cfg, frames, fid):
     """Manual ROI mask if one exists for ``fid``, else auto Otsu segmentation.
 
-    Returns ``(labels [H,W] int, proj [H,W])``. Manual masks are used verbatim
-    (no area filter) so hand-drawn ROIs are never silently dropped.
+    ``frames`` is the stack used for segmentation and the projection image
+    (the F380 stack for Fura-2). Returns ``(labels [H,W] int, proj [H,W])``.
+    Manual masks are used verbatim (no area filter) so hand-drawn ROIs are
+    never silently dropped.
     """
     proj = frames.mean(axis=0)
     path = manual_roi_path(cfg, fid)
@@ -75,3 +81,19 @@ def roi_traces(frames, labels):
     for c in range(1, n + 1):
         traces[c - 1] = fr[:, flat == c].mean(axis=1)
     return traces
+
+
+def roi_signal_traces(stacks, labels):
+    """Per-ROI signal trace -> ``[n_cells, T]``.
+
+    ``stacks`` is ``(frames,)`` for a single-channel dye (plain ROI mean) or
+    ``(numerator, denominator)`` for a ratiometric dye. For the ratio, each
+    channel is averaged over the ROI first and the means are divided
+    (F340_mean / F380_mean), which is less noisy and less biased than
+    averaging per-pixel ratios.
+    """
+    if len(stacks) == 1:
+        return roi_traces(stacks[0], labels)
+    num = roi_traces(stacks[0], labels)
+    den = roi_traces(stacks[1], labels)
+    return num / np.maximum(den, 1.0)
