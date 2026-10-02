@@ -17,6 +17,33 @@ plt.rcParams.update({
 # headless batch rendering; the interactive viewer leaves the GUI backend.
 
 
+# --------------------------------------------------------------------------- #
+# Time-course helpers (used to cap traces/epochs at a max time, e.g. 10 min)
+# --------------------------------------------------------------------------- #
+
+def _truncate_time(t_min, t_max):
+    """Boolean mask selecting samples with t_min <= t_max.
+
+    Pass t_max=None to disable truncation (mask is all True).
+    """
+    t_min = np.asarray(t_min)
+    if t_max is None:
+        return np.ones_like(t_min, dtype=bool)
+    return t_min <= t_max
+
+
+def _clip_epochs(eps, t_max):
+    """Drop/clip epoch tuples (s, e, v, dc, lab) so none extend past t_max."""
+    if t_max is None:
+        return eps
+    out = []
+    for (s, e, v, dc, lab) in eps:
+        if s >= t_max:
+            continue
+        out.append((s, min(e, t_max), v, dc, lab))
+    return out
+
+
 def _dose_axis(ax, xs, log, dose_label):
     """Set the dose x-axis label and (for log axes) ticks at the real doses.
 
@@ -71,7 +98,12 @@ def _treatment_bars(ax, eps):
             fontsize=8
         )
 
-def plot_wholefield(path, fid, t_min, wf_dff, eps):
+def plot_wholefield(path, fid, t_min, wf_dff, eps, t_max=10.0):
+
+    mask = _truncate_time(t_min, t_max)
+    t_min = np.asarray(t_min)[mask]
+    wf_dff = np.asarray(wf_dff)[mask]
+    eps = _clip_epochs(eps, t_max)
 
     fig, ax = plt.subplots(figsize=(10,5))
 
@@ -108,7 +140,14 @@ def plot_wholefield(path, fid, t_min, wf_dff, eps):
     plt.close(fig)
 
 
-def plot_cells(path, fid, proj, labels, c_dff, t_min, eps, ncells):
+def plot_cells(path, fid, proj, labels, c_dff, t_min, eps, ncells, t_max=10.0):
+
+    mask = _truncate_time(t_min, t_max)
+    t_min = np.asarray(t_min)[mask]
+    if ncells:
+        c_dff = np.asarray(c_dff)[:, mask]
+    eps = _clip_epochs(eps, t_max)
+
     fig, (a0, a1) = plt.subplots(1, 2, figsize=(13, 5),
                                  gridspec_kw={"width_ratios": [1, 1.4]})
     a0.imshow(proj, cmap="gray",
@@ -134,7 +173,13 @@ def plot_cells(path, fid, proj, labels, c_dff, t_min, eps, ncells):
     plt.close(fig)
 
 
-def plot_celltraces(path, fid, t_min, c_dff, eps, ncells):
+def plot_celltraces(path, fid, t_min, c_dff, eps, ncells, t_max=10.0):
+
+    mask = _truncate_time(t_min, t_max)
+    t_min = np.asarray(t_min)[mask]
+    if ncells:
+        c_dff = np.asarray(c_dff)[:, mask]
+    eps = _clip_epochs(eps, t_max)
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -427,6 +472,183 @@ def plot_dose_byfile(path, byfile_rows, file_ids, extra="",
     a1.legend(handles=handles, fontsize=7, title="prep", ncol=2)
     fig.suptitle("HMC3 microglia - dose-response with file as replicate unit "
                  f"(each dish weighs equally, DC {dc}%){extra}", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
+# Duty-cycle x PRF grouped bar charts
+#
+# These match the style of recruitment_vs_DC_PRF.png / response_latency_vs_DC_PRF.png:
+# x-axis groups are duty cycle, bars within a group are colored by PRF, with
+# dashed gray separators between duty-cycle groups and a "PRF" color legend.
+#
+# They consume the same ``by_dc`` shape already built for plot_by_dc /
+# plot_latency_byfile: a dict {duty_cycle: [row, ...]}, where each row's
+# "dose" field holds the PRF (Hz) for sessions like yours where dose_unit
+# is PRF. No re-analysis or renormalization happens here -- only rendering.
+# --------------------------------------------------------------------------- #
+
+def _purple_sequence(levels):
+    """Map sorted levels (e.g. PRF values) to light->dark purple shades."""
+    levels = sorted(levels)
+    n = len(levels)
+    cmap = cm.get_cmap("Purples")
+    shades = [cmap(0.30 + 0.55 * i / max(n - 1, 1)) for i in range(n)]
+    return dict(zip(levels, shades))
+
+
+def _grouped_layout(dc_order, prf_order, slot_w=1.0, group_gap=1.2):
+    """x positions for each (dc, prf) bar slot, group centers, and the
+    x location of each dashed separator between duty-cycle groups."""
+    xpos = {}
+    centers = {}
+    seps = []
+    cursor = 0.0
+    for gi, dc in enumerate(dc_order):
+        start = cursor
+        for prf in prf_order:
+            xpos[(dc, prf)] = cursor
+            cursor += slot_w
+        end = cursor - slot_w
+        centers[dc] = (start + end) / 2
+        cursor += group_gap
+        if gi < len(dc_order) - 1:
+            seps.append(cursor - group_gap / 2)
+    return xpos, centers, seps
+
+
+def plot_recruitment_by_dc_prf(path, by_dc, prf_order=None, dc_order=None,
+                               extra=""):
+    """Recruitment (%) grouped by duty cycle, colored by PRF.
+
+    Parameters
+    ----------
+    by_dc : dict
+        {duty_cycle: [row, ...]}. Each row needs "dose" (PRF, Hz),
+        "frac_responding", "n_cells", and optionally "n_responding"
+        (falls back to round(frac_responding * n_cells) for the bar label).
+    """
+    dc_order = dc_order or sorted(by_dc)
+    if prf_order is None:
+        prf_order = sorted({r["dose"] for rows in by_dc.values() for r in rows})
+
+    colors = _purple_sequence(prf_order)
+    xpos, centers, seps = _grouped_layout(dc_order, prf_order)
+    bar_w = 0.8
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    for dc in dc_order:
+        rows_by_prf = {r["dose"]: r for r in by_dc.get(dc, [])}
+        for prf in prf_order:
+            row = rows_by_prf.get(prf)
+            if row is None:
+                continue
+            x = xpos[(dc, prf)]
+            n_cells = row["n_cells"]
+            n_resp = row.get("n_responding")
+            if n_resp is None:
+                n_resp = int(round(row["frac_responding"] * n_cells))
+            pct = row["frac_responding"] * 100
+
+            ax.bar(x, pct, width=bar_w, color=colors[prf],
+                   edgecolor="black", linewidth=1, zorder=2)
+            ax.text(x, pct + 1.5 if pct > 0 else 1.5, f"{n_resp}/{n_cells}",
+                    ha="center", va="bottom", fontsize=9)
+
+    for s in seps:
+        ax.axvline(s, color="0.7", linestyle="--", linewidth=1, zorder=0)
+
+    ax.set_xticks([centers[dc] for dc in dc_order])
+    ax.set_xticklabels([f"{dc:g}\\% DC" for dc in dc_order])
+    ax.set_xlabel("Duty Cycle")
+    ax.set_ylabel(r"Recruitment (\%)")
+    ax.set_ylim(0, 100)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=colors[p],
+                              edgecolor="black") for p in prf_order]
+    ax.legend(handles, [f"{p:g} Hz" for p in prf_order], title="PRF",
+              loc="upper left", frameon=False)
+
+    if extra:
+        fig.suptitle(extra, fontsize=12)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def plot_latency_by_dc_prf(path, by_dc_lat, value_key="peak",
+                           mean_key="mean_peak_s", sem_key="sem_peak_s",
+                           ylabel="Time to peak response (min)",
+                           title=None, prf_order=None, dc_order=None,
+                           extra=""):
+    """Responder latency metric (mean +/- SEM + per-cell points), grouped by
+    duty cycle and colored by PRF.
+
+    Parameters
+    ----------
+    by_dc_lat : dict
+        {duty_cycle: [row, ...]}. Each row needs "dose" (PRF, Hz),
+        value_key (list of per-cell latency values), mean_key, sem_key.
+        Rows with an empty/missing value_key list are skipped (no bar is
+        drawn for combinations with zero responders), matching the
+        reference figure.
+    """
+    dc_order = dc_order or sorted(by_dc_lat)
+    if prf_order is None:
+        prf_order = sorted({r["dose"] for rows in by_dc_lat.values() for r in rows})
+
+    colors = _purple_sequence(prf_order)
+    xpos, centers, seps = _grouped_layout(dc_order, prf_order)
+    bar_w = 0.8
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    for dc in dc_order:
+        rows_by_prf = {r["dose"]: r for r in by_dc_lat.get(dc, [])}
+        for prf in prf_order:
+            row = rows_by_prf.get(prf)
+            if row is None or not row.get(value_key):
+                continue
+            x = xpos[(dc, prf)]
+            vals = row[value_key]
+
+            ax.bar(x, row[mean_key], width=bar_w, color=colors[prf],
+                   edgecolor="black", linewidth=1, zorder=2)
+            ax.errorbar(x, row[mean_key], yerr=row.get(sem_key, 0),
+                        fmt="none", ecolor="black", capsize=4,
+                        linewidth=1.5, zorder=3)
+
+            jitter = (np.random.rand(len(vals)) - 0.5) * bar_w * 0.3
+            ax.scatter(x + jitter, vals, facecolor="white",
+                       edgecolor="black", linewidth=0.8, s=28, zorder=4)
+
+    for s in seps:
+        ax.axvline(s, color="0.7", linestyle="--", linewidth=1, zorder=0)
+
+    ax.set_xticks([centers[dc] for dc in dc_order])
+    ax.set_xticklabels([f"{dc:g}\\% DC" for dc in dc_order])
+    ax.set_xlabel("Duty Cycle")
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(bottom=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=colors[p],
+                              edgecolor="black") for p in prf_order]
+    ax.legend(handles, [f"{p:g} Hz" for p in prf_order], title="PRF",
+              loc="upper left", frameon=False)
+
+    if title:
+        ax.set_title(title)
+    if extra:
+        fig.suptitle(extra, fontsize=12)
+
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
