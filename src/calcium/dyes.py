@@ -8,6 +8,27 @@ import numpy as np
 
 from .io import load_tif
 
+TIF_SUFFIXES = (".tif", ".tiff")
+
+
+def find_tif(data_dir: Path, stem: str) -> Path:
+    """Path of ``<stem>.tif`` in ``data_dir``, ignoring case and .tif/.tiff.
+
+    Falls back to ``<stem>.TIF`` when nothing matches, so the "file not found"
+    error names the file the microscope normally writes.
+    """
+    data_dir = Path(data_dir)
+    want = stem.lower()
+    try:
+        for p in sorted(data_dir.iterdir()):
+            if (p.is_file() and not p.name.startswith(".")
+                    and p.suffix.lower() in TIF_SUFFIXES
+                    and p.stem.lower() == want):
+                return p
+    except OSError:
+        pass
+    return data_dir / f"{stem}.TIF"
+
 
 @dataclass(frozen=True)
 class DyeSpec:
@@ -19,8 +40,8 @@ class DyeSpec:
 
     def paths(self, data_dir: Path, fid: str) -> list[Path]:
         if not self.channels:
-            return [data_dir / f"{fid}.TIF"]
-        return [data_dir / f"{fid}_{c}.TIF" for c in self.channels]
+            return [find_tif(data_dir, fid)]
+        return [find_tif(data_dir, f"{fid}_{c}") for c in self.channels]
 
 
 # To support another dye, add one line here.

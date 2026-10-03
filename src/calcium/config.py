@@ -1,7 +1,7 @@
 """Session configuration schema."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 from .dyes import DYES
@@ -28,6 +28,10 @@ class SessionConfig:
     out_dir: Path
     file_ids: list[str]
     protocol: Protocol
+
+    # Folder holding the hand-corrected ROI masks (<name>_<fid>.npy).
+    # None = legacy location, <repo>/rois (sessions created before workspaces).
+    rois_dir: Path | None = None
 
     # What kind of experiment this is; decides which summary outputs are made.
     #   "lifu":     numeric dose (V, PRF...) + duty cycle -> dose-response figures
@@ -82,3 +86,49 @@ class SessionConfig:
             raise ValueError(
                 f"session {self.name}: no protocol entry for file id(s) "
                 f"{missing}; protocol keys are {sorted(self.protocol)}")
+
+    # ---------------------------------------------------------------- JSON
+    def to_dict(self) -> dict:
+        """JSON-safe dict of every setting (paths as str, sets as sorted lists)."""
+        out = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if isinstance(v, Path):
+                v = str(v)
+            elif f.name == "protocol":
+                v = {fid: [[t, lab] for t, lab in evs] for fid, evs in v.items()}
+            elif isinstance(v, (set, frozenset)):
+                v = sorted(v)
+            elif isinstance(v, dict):
+                v = dict(v)
+            elif isinstance(v, (list, tuple)):
+                v = list(v)
+            out[f.name] = v
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SessionConfig":
+        """Inverse of :meth:`to_dict`. Raises ValueError with a clear message."""
+        known = {f.name: f for f in fields(cls)}
+        unknown = sorted(set(d) - set(known))
+        if unknown:
+            raise ValueError(f"unknown setting(s): {unknown}")
+        required = [n for n, f in known.items()
+                    if f.default is MISSING and f.default_factory is MISSING]
+        missing = [n for n in required if n not in d]
+        if missing:
+            raise ValueError(f"missing required setting(s): {missing}")
+
+        kw = dict(d)
+        for k in ("data_dir", "out_dir", "rois_dir"):
+            if kw.get(k) is not None:
+                kw[k] = Path(kw[k])
+        kw["protocol"] = {str(fid): [(t, str(lab)) for t, lab in evs]
+                          for fid, evs in kw["protocol"].items()}
+        kw["file_ids"] = [str(f) for f in kw["file_ids"]]
+        for k in ("off_labels", "dose_exclude_files", "dose_exclude_dose"):
+            if k in kw:
+                kw[k] = set(kw[k])
+        if "truncate_min" in kw:
+            kw["truncate_min"] = {str(k): v for k, v in kw["truncate_min"].items()}
+        return cls(**kw)

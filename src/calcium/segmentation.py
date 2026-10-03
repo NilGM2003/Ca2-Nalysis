@@ -44,10 +44,13 @@ def compact_labels(labels):
 def manual_roi_path(cfg, fid) -> Path:
     """Where the hand-corrected ROI mask for ``fid`` lives (one .npy per file).
 
-    Kept under ``rois/`` at the repo root with a flat ``<session>_<fid>.npy``
-    name (a per-session subdir would be caught by the ``2026*/`` gitignore).
+    Sessions created in the app carry ``cfg.rois_dir`` (inside the user's
+    workspace). Older sessions have ``rois_dir=None`` and keep using ``rois/``
+    at the repo root. The name is a flat ``<session>_<fid>.npy`` (a
+    per-session subdir would be caught by the ``2026*/`` gitignore).
     """
-    return REPO_ROOT / "rois" / f"{cfg.name}_{fid}.npy"
+    base = Path(cfg.rois_dir) if cfg.rois_dir else REPO_ROOT / "rois"
+    return base / f"{cfg.name}_{fid}.npy"
 
 
 def load_or_segment(cfg, frames, fid):

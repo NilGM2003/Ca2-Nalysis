@@ -34,12 +34,13 @@ _BACKEND = _select_backend()
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from calcium.viewer import TraceViewer   # noqa: E402
-from sessions import SESSIONS            # noqa: E402
+from calcium.sessionstore import get_sessions   # noqa: E402
 
 
 def main(argv):
     name = argv[1] if len(argv) > 1 else "20260609"
     fid = argv[2] if len(argv) > 2 else "1"
+    SESSIONS = get_sessions()
     if name not in SESSIONS:
         sys.exit(f"Unknown session '{name}'. Available: {', '.join(SESSIONS)}")
     cfg = SESSIONS[name]
