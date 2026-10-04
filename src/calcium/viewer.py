@@ -22,7 +22,7 @@ from matplotlib import cm
 from matplotlib.widgets import Button, Slider
 from scipy import ndimage as ndi
 
-from .io import load_tif, truncate
+from .dyes import DYES, load_recording
 from .protocol import build_epochs
 from .segmentation import load_or_segment
 
@@ -33,14 +33,19 @@ class TraceViewer:
         self.fid = str(fid)
 
         # ---- data ----
-        frames, t_s = load_tif(cfg.data_dir / f"{self.fid}.TIF")
-        if self.fid in cfg.truncate_min:
-            frames, t_s = truncate(frames, t_s, cfg.truncate_min[self.fid])
+        # frames = the stack shown and segmented: raw frames for Calbryte,
+        # the F380 stack for Fura-2 (same image the pipeline segments on).
+        self.ratiometric = DYES[cfg.dye].ratiometric
+        _stacks, frames, _wf, t_s = load_recording(
+            DYES[cfg.dye], cfg.data_dir, self.fid,
+            cfg.truncate_min.get(self.fid))
+        del _stacks
         self.frames = frames
         self.t_s = t_s
         self.t_min = t_s / 60.0
         self.T, self.H, self.W = frames.shape
-        self.eps = build_epochs(cfg.protocol[self.fid], self.t_min[-1], cfg.default_dc)
+        self.eps = build_epochs(cfg.protocol[self.fid], self.t_min[-1],
+                                cfg.default_dc, cfg.off_labels)
 
         self.labels, self.proj = load_or_segment(cfg, frames, self.fid)
         self.ncells = int(self.labels.max())
@@ -64,6 +69,10 @@ class TraceViewer:
 
     # ------------------------------------------------------------------ data
     def _load_traces(self, path):
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} not found. Run the analysis for session "
+                f"'{self.cfg.name}' first.")
         with open(path) as f:
             r = csv.reader(f)
             hdr = next(r)
@@ -109,10 +118,12 @@ class TraceViewer:
                 x, y, str(c), color="0.6", fontsize=7, ha="center", va="center")
 
         # trace plot: epoch shading + cursor
-        vmax = max((v for *_, v, _, _ in self.eps), default=1)
+        doses = [v for (_s, _e, v, _dc, _lab) in self.eps if np.isfinite(v)]
+        vmax = max(doses, default=0) or 1        # chemical epochs have no dose
         for (s, e, v, dc, lab) in self.eps:
-            self.ax_plot.axvspan(s, e, color=cm.autumn_r(0.15 + 0.7 * v / vmax),
-                                 alpha=0.25, zorder=0)
+            shade = (cm.autumn_r(0.15 + 0.7 * v / vmax) if np.isfinite(v)
+                     else cm.autumn_r(0.5))
+            self.ax_plot.axvspan(s, e, color=shade, alpha=0.25, zorder=0)
         tr = self.ax_plot.get_xaxis_transform()
         for (s, e, v, dc, lab) in self.eps:
             self.ax_plot.text((s + e) / 2, 0.99, lab, transform=tr, ha="center",
@@ -120,7 +131,8 @@ class TraceViewer:
         self.ax_plot.axhline(0, color="gray", lw=0.5, ls="--")
         self.cursor = self.ax_plot.axvline(self.t_min[0], color="k", lw=1.0, zorder=5)
         self.ax_plot.set_xlabel("Time (min)")
-        self.ax_plot.set_ylabel(r"$\Delta F/F_0$")
+        self.ax_plot.set_ylabel(r"$\Delta R/R_0$  (F340/F380)" if self.ratiometric
+                                else r"$\Delta F/F_0$")
         self.ax_plot.set_ylim(-0.2, 1.0)
 
         # slider
@@ -154,7 +166,8 @@ class TraceViewer:
         self.cursor.set_xdata([self.t_min[self.k], self.t_min[self.k]])
         self.ax_img.set_title(
             f"frame {self.k}/{self.T - 1}   t={self.t_min[self.k]:.2f} min   "
-            f"LIFUS: {self._stim_at(self.k)}", fontsize=10)
+            f"{'LIFUS' if self.cfg.experiment_type == 'lifu' else 'condition'}"
+            f": {self._stim_at(self.k)}", fontsize=10)
         self.fig.canvas.draw_idle()
 
     def _on_slider(self, val):

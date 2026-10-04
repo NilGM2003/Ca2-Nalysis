@@ -8,11 +8,17 @@ supported; each session declares its dye and experiment type.
 ## Layout
 
 ```
+app.py                desktop app: sessions, protocols, run, ROI editor, viewer
+Setup Mac.command     double-click: one-time setup on a new Mac (see "The app")
 analyze.py            CLI entry point:  python analyze.py [session]
 view.py               interactive frame + trace viewer
 edit_rois.py          interactive manual ROI editor
 src/calcium/          analysis package (session-agnostic)
   config.py             SessionConfig: everything one session needs
+  workspace.py          workspace folder (sessions/, rois/, results/)
+  sessionstore.py       JSON sessions + the built-in sessions/*.py ones
+  scan.py               detect dye and file ids from a data folder
+  gui/                  the app window (model.py = form logic, main_window.py)
   dyes.py               dye specs (which TIF files to load) + recording loader
   io.py                 load TIF stacks + per-frame timing (AQUACOSMOS tag)
   protocol.py           parse acquisition protocol into stimulation epochs
@@ -20,13 +26,15 @@ src/calcium/          analysis package (session-agnostic)
   roieditor.py          interactive manual ROI correction
   dff.py                dF/F0 with rolling-percentile photobleach detrending
   metrics.py            per-epoch whole-field + per-cell responder metrics
+  viewer.py             interactive viewer behind view.py
   doseresponse.py       pooled and file-as-replicate aggregation (LIFUS)
   export.py             per-cell trace CSV export
   plotting.py           all figures
   pipeline.py           orchestration: run_session(config)
 sessions/             dataset-specific configs (protocol, dye, exclusions, knobs)
   s20260609.py
-scripts/              standalone utilities (e.g. tif_to_mp4.py)
+scripts/              utilities: tif_to_mp4.py, setup_mac.sh, make_mac_app.sh, make_icon.py
+tests/                unit tests (python -m unittest discover -s tests)
 20260609/             raw data (TIF stacks + protocol xlsx)
 Calci/                raw data of chemical / Fura-2 sessions
 rois/                 hand-corrected ROI masks (<session>_<file>.npy)
@@ -34,6 +42,57 @@ results/<session>/    generated figures + CSVs
 ```
 
 Raw data can live anywhere: each session's `data_dir` points to it.
+
+## The app
+
+```bash
+uv run python app.py
+```
+
+One window to create a session (pick the data folder, **Scan** detects the dye
+and file ids), type each file's protocol, then **Run analysis**, **Edit ROIs…**,
+**View traces…** or open the results folder. The analysis, ROI editor and
+viewer run as separate processes; their output appears in the log pane.
+
+Sessions made in the app are saved as JSON in the **workspace folder**
+(default `~/CalciumAnalysis`, changeable in the window): `sessions/`, `rois/`
+and `results/` live there. The older `sessions/sYYYYMMDD.py` sessions are
+listed as "(built-in)", keep their own paths, and can be run but not
+overwritten (save under a new name for a copy). The command-line scripts see
+both kinds.
+
+### Desktop icon (macOS)
+
+```bash
+bash scripts/make_mac_app.sh          # creates "Calcium Analysis.app" on the Desktop
+```
+
+Double-click it to open the window. It is a thin launcher that runs
+`uv run python app.py` in this repo, so it always uses the current code; run
+the script again if you move or re-clone the repo, and once per computer. If
+it does not open, check `~/Library/Logs/CalciumAnalysis.log`. The first launch
+after a fresh checkout can take a minute while `uv` builds the environment.
+The window appears in the Dock as "Python" (a limitation of script launchers).
+
+### Installing on another Mac (no Python, no code editor)
+
+1. Get the project folder: download it as a ZIP and unzip it (or `git clone`).
+2. Double-click **`Setup Mac.command`** in that folder. The first time macOS may
+   refuse; then right-click it, choose **Open**, and confirm.
+3. Wait while it installs `uv`, builds the environment (this downloads Python
+   and the libraries, a few minutes) and creates **Calcium Analysis** on the
+   Desktop. It needs internet only for this step.
+4. Open **Calcium Analysis** from the Desktop. macOS may ask to allow access
+   to folders (Desktop, Documents); click Allow.
+
+Everything is installed inside the project folder and the user's home folder;
+no admin rights are needed. Setup can be run again at any time. After an update
+of the code just replace the files (or `git pull`); run the setup again only if
+`uv.lock` changed. If something fails, the messages in the setup window and
+`~/Library/Logs/CalciumAnalysis.log` say what. Raw data is not part of the
+project: each person points sessions at their own data folders. The built-in
+sessions in `sessions/` refer to the original experiments' data folders and
+will show as missing on other computers; new sessions are created in the app.
 
 ## Usage
 
