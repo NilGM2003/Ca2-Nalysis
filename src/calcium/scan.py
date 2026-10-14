@@ -13,7 +13,10 @@ Rules, driven by the ``DYES`` table in ``dyes.py``:
 * case and ``.tif`` / ``.tiff`` do not matter; hidden files (``._foo.tif`` on
   macOS) are ignored;
 * a folder holding more than one kind is resolved in favour of the larger
-  group, with a warning listing what was left out.
+  group, with a warning listing what was left out;
+* when every file id starts with the same text ending in ``_``, ``-``, ``.`` or
+  a space (``20260623_1``, ``20260623_2`` ...), that text is proposed as the
+  file-name prefix and the ids are shortened to ``1``, ``2`` ...
 """
 from __future__ import annotations
 
@@ -30,11 +33,37 @@ class ScanResult:
     dye: str | None                      # None when no usable TIF files found
     file_ids: list[str]
     warnings: list[str] = field(default_factory=list)
+    prefix: str = ""                     # shared file-name prefix, "" if none
 
 
 def _natural_key(s: str):
     """Sort '2' before '10' (and '001' before '002')."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
+_SEPARATORS = "_-. "
+
+
+def split_common_prefix(ids: list[str]) -> tuple[str, list[str]]:
+    """Split a shared leading text off the ids: ``('20260623_', ['1', '2'])``.
+
+    The prefix is the longest text all ids share, cut back to its last
+    separator (``_ - .`` or space), so ``001``/``002`` stay as they are. Nothing
+    is split if an id would be left empty.
+    """
+    if not ids:
+        return "", []
+    common = ids[0]
+    for i in ids[1:]:
+        n = 0
+        while n < min(len(common), len(i)) and common[n] == i[n]:
+            n += 1
+        common = common[:n]
+    cut = max((common.rfind(c) for c in _SEPARATORS), default=-1)
+    prefix = common[:cut + 1] if cut >= 0 else ""
+    if not prefix or any(len(i) <= len(prefix) for i in ids):
+        return "", list(ids)
+    return prefix, [i[len(prefix):] for i in ids]
 
 
 def scan_folder(folder) -> ScanResult:
@@ -103,4 +132,9 @@ def scan_folder(folder) -> ScanResult:
         warnings.append(f"folder also holds {other} recordings ({left_out}); "
                         f"they are left out because {dye} has more files")
 
-    return ScanResult(folder, dye, sorted(ids, key=_natural_key), warnings)
+    prefix, short = split_common_prefix(ids)
+    if prefix:
+        warnings.append(f"files share the prefix '{prefix}': file ids are "
+                        f"{', '.join(sorted(short, key=_natural_key))}")
+    return ScanResult(folder, dye, sorted(short, key=_natural_key), warnings,
+                      prefix)

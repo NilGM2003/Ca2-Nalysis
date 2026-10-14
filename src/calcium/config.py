@@ -5,6 +5,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 from .dyes import DYES
+from .outputs import all_keys
 
 # A protocol is, per file id, a list of (time_minutes, label) events.
 # Labels are either a numeric dose with a unit ("4.5V", "8V@DC60",
@@ -44,6 +45,15 @@ class SessionConfig:
     # More dyes can be added in dyes.py (DYES).
     dye: str = "calbryte"
 
+    # Text the microscope puts before the file id in the file names:
+    # prefix "20260623_" + id "1" -> 20260623_1.tif. Empty when the files are
+    # simply <id>.tif (e.g. 001_340.tif for Fura-2 id "001").
+    file_prefix: str = ""
+
+    # Which figures/CSVs to produce (keys such as "dose_pooled.png", see
+    # outputs.py). None = everything that applies to the experiment type.
+    outputs: set[str] | None = None
+
     # Protocol labels that end an epoch without starting a new one.
     # NOTE: not yet read by build_epochs (protocol.py); wire it in there.
     off_labels: set[str] = field(default_factory=lambda: {"STOP"})
@@ -78,6 +88,11 @@ class SessionConfig:
             raise ValueError(
                 f"experiment_type must be one of {EXPERIMENT_TYPES}, "
                 f"got {self.experiment_type!r}")
+        if self.outputs is not None:
+            bad = sorted(set(self.outputs) - all_keys())
+            if bad:
+                raise ValueError(f"unknown output(s) {bad}; valid keys: "
+                                 f"{sorted(all_keys())}")
         if self.dye not in DYES:
             raise ValueError(
                 f"dye must be one of {sorted(DYES)}, got {self.dye!r}")
@@ -129,6 +144,8 @@ class SessionConfig:
         for k in ("off_labels", "dose_exclude_files", "dose_exclude_dose"):
             if k in kw:
                 kw[k] = set(kw[k])
+        if kw.get("outputs") is not None:
+            kw["outputs"] = set(kw["outputs"])
         if "truncate_min" in kw:
             kw["truncate_min"] = {str(k): v for k, v in kw["truncate_min"].items()}
         return cls(**kw)

@@ -18,6 +18,7 @@ src/calcium/          analysis package (session-agnostic)
   workspace.py          workspace folder (sessions/, rois/, results/)
   sessionstore.py       JSON sessions + the built-in sessions/*.py ones
   scan.py               detect dye and file ids from a data folder
+  outputs.py            the figures/CSVs a session can produce (Results tab)
   gui/                  the app window (model.py = form logic, main_window.py)
   dyes.py               dye specs (which TIF files to load) + recording loader
   io.py                 load TIF stacks + per-frame timing (AQUACOSMOS tag)
@@ -53,6 +54,14 @@ One window to create a session (pick the data folder, **Scan** detects the dye
 and file ids), type each file's protocol, then **Run analysis**, **Edit ROIs…**,
 **View traces…** or open the results folder. The analysis, ROI editor and
 viewer run as separate processes; their output appears in the log pane.
+**Run analysis** is the first (and bold) button.
+
+The **Results** tab (next to Setup and Protocol) chooses which figures and
+CSV files the analysis produces: tick the ones you want, per session. The
+list depends on the experiment type (LIFU: dose-response, duty-cycle and
+latency outputs; chemical: the per-condition summary), and unticked outputs
+are not computed or written. *Per-cell traces* (CSV) is what **View
+traces…** reads, so keep it ticked if you use the viewer.
 
 Sessions made in the app are saved as JSON in the **workspace folder**
 (default `~/CalciumAnalysis`, changeable in the window): `sessions/`, `rois/`
@@ -100,7 +109,8 @@ will show as missing on other computers; new sessions are created in the app.
 uv run python analyze.py 20260609     # or: .venv/bin/python analyze.py 20260609
 ```
 
-Per session this writes to `results/<session>/`.
+Per session this writes to `results/<session>/`. Everything below is the
+default; the Results tab (the `outputs` setting) selects a subset.
 
 Always (both experiment types):
 
@@ -155,7 +165,15 @@ stack, and each ROI trace is the ratio of the ROI's mean F340 to its mean
 F380. The whole-field trace is the ratio of the channel means. Another dye
 needs one line in `DYES` in `dyes.py`.
 
-File extensions are upper case (`.TIF`).
+File names are matched ignoring case and accept `.tif` / `.tiff`.
+
+**File name prefix** (`file_prefix`, default empty): if the microscope puts
+text before the file id, e.g. `20260623_1.tif`, `20260623_2.tif`, set
+`file_prefix="20260623_"` and keep the ids short (`"1"`, `"2"`, …). The id
+(not the prefix) names the ROI masks and the figures, so masks and protocols
+stay readable. In the app, **Scan** detects a shared prefix (text ending in
+`_`, `-`, `.` or a space) and fills it in. Before a job starts, the app checks
+that all expected files exist and lists any that are missing.
 
 ## Correcting the segmentation manually
 
@@ -190,6 +208,12 @@ Create `sessions/sYYYYMMDD.py` defining a `CONFIG = SessionConfig(...)`
 (data dir, file ids, protocol, dye, experiment type, and optional truncation /
 dose-response exclusions), then register it in `sessions/__init__.py`
 (import it **and** add it to `SESSIONS`).
+
+`outputs` (default `None` = everything that applies) limits what is produced,
+with keys such as `"dose_pooled.png"`, `"dose_pooled.csv"`, `"latency.csv"`,
+`"condition_summary.csv"`, `"traces.csv"`, `"metrics.csv"` (see
+`src/calcium/outputs.py` for all of them); keys that do not apply to the
+experiment type are ignored.
 
 Every file id in `file_ids` needs a key of the same name in `PROTOCOL`;
 the config checks this when it loads. Protocols can differ per file.

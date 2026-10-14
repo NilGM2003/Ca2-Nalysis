@@ -8,7 +8,7 @@ from matplotlib import cm
 import matplotlib.patheffects as pe
 
 plt.rcParams.update({
-    "text.usetex": True,
+    "text.usetex": False,
     "font.family": "serif",
     "font.size": 12
 })

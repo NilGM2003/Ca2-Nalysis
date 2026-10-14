@@ -12,7 +12,8 @@ import re
 from pathlib import Path
 
 from ..config import EXPERIMENT_TYPES, SessionConfig
-from ..dyes import DYES
+from ..dyes import DYES, session_paths
+from ..outputs import applicable_keys
 from ..protocol import build_epochs, mmss
 from ..sessionstore import validate_session_name
 from ..workspace import results_dir, rois_dir
@@ -30,7 +31,8 @@ class FormError(ValueError):
 def default_form() -> dict:
     return dict(
         name="", data_dir="", dye="calbryte", experiment_type="lifu",
-        file_ids=[], protocols={},
+        file_prefix="", file_ids=[], protocols={},
+        outputs=sorted(applicable_keys("lifu")),
         off_labels="STOP", default_dc="40",
         dose_unit="V", dose_label="LIFUS amplitude (V)", dose_log=False,
         dose_dc="40", dose_exclude_files="", dose_exclude_dose="",
@@ -132,12 +134,26 @@ def build_config(form: dict, workspace) -> SessionConfig:
     elif not Path(data_dir).is_dir():
         problems.append(f"data folder does not exist: {data_dir}")
 
+    file_prefix = str(form.get("file_prefix", "")).strip()
+    if "/" in file_prefix or "\\" in file_prefix:
+        problems.append("file name prefix cannot contain '/' or '\\'")
+
     dye = form["dye"]
     if dye not in DYES:
         problems.append(f"dye must be one of {sorted(DYES)}")
     etype = form["experiment_type"]
     if etype not in EXPERIMENT_TYPES:
         problems.append(f"experiment type must be one of {EXPERIMENT_TYPES}")
+
+    # ---- which results to produce (None = everything for this type)
+    outputs = None
+    if etype in EXPERIMENT_TYPES and "outputs" in form:
+        chosen = set(form["outputs"]) & applicable_keys(etype)
+        if not chosen:
+            problems.append("choose at least one result to produce "
+                            "(Results tab)")
+        elif chosen != applicable_keys(etype):
+            outputs = chosen
 
     file_ids = [str(f) for f in form["file_ids"]]
     if not file_ids:
@@ -209,7 +225,8 @@ def build_config(form: dict, workspace) -> SessionConfig:
         return SessionConfig(
             name=name, data_dir=Path(data_dir),
             out_dir=results_dir(ws) / name, rois_dir=rois_dir(ws),
-            file_ids=file_ids, protocol=protocol,
+            file_ids=file_ids, protocol=protocol, file_prefix=file_prefix,
+            outputs=outputs,
             experiment_type=etype, dye=dye, off_labels=off_labels,
             default_dc=default_dc, truncate_min=truncate,
             dose_unit=str(form["dose_unit"]),
@@ -225,7 +242,10 @@ def form_from_config(cfg: SessionConfig) -> dict:
     """Inverse of :func:`build_config`, used when a session is opened."""
     return dict(
         name=cfg.name, data_dir=str(cfg.data_dir), dye=cfg.dye,
-        experiment_type=cfg.experiment_type,
+        experiment_type=cfg.experiment_type, file_prefix=cfg.file_prefix,
+        outputs=sorted(applicable_keys(cfg.experiment_type)
+                       if cfg.outputs is None
+                       else set(cfg.outputs) & applicable_keys(cfg.experiment_type)),
         file_ids=list(cfg.file_ids),
         protocols={fid: protocol_to_text(cfg.protocol.get(fid, []))
                    for fid in cfg.file_ids},
@@ -252,6 +272,7 @@ def apply_scan(form: dict, scan) -> list[str]:
     if scan.dye is None:
         return msgs
     form["dye"] = scan.dye
+    form["file_prefix"] = scan.prefix
     form["file_ids"] = list(scan.file_ids)
     form["protocols"] = {fid: form["protocols"].get(fid, "")
                          for fid in scan.file_ids}
@@ -264,3 +285,17 @@ def copy_protocol_to_all(form: dict, fid: str) -> None:
     text = form["protocols"].get(fid, "")
     for other in form["file_ids"]:
         form["protocols"][other] = text
+
+
+def missing_files(cfg: SessionConfig) -> list[str]:
+    """Names of expected TIF files that are not in the data folder.
+
+    Lets the app say "file 1: 1.TIF not found" before starting a job instead
+    of showing a traceback.
+    """
+    missing = []
+    for fid in cfg.file_ids:
+        for path in session_paths(cfg, fid):
+            if not path.exists():
+                missing.append(path.name)
+    return missing

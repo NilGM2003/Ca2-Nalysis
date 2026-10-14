@@ -19,10 +19,12 @@ PROTOCOL = {
 
 CONFIG = SessionConfig(
     name="20260623",
-    data_dir=ROOT / "20260623",
+    data_dir=ROOT / "Calci" /"TFG"/ "LIFU" / "20260623",
     out_dir=ROOT / "results" / "20260623",
     file_ids=["1", "2", "3", "4","5", "6", "7", "8", "9", "10"],
     protocol=PROTOCOL,
+    dye="calbryte",
+    experiment_type="lifu",
     dose_unit="Hz",
     dose_label="PRF (Hz)",
     dose_log=True,

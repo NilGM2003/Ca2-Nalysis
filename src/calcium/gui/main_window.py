@@ -16,24 +16,31 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
 from ..config import EXPERIMENT_TYPES
 from ..dyes import DYES
+from ..outputs import all_keys, applicable_keys, specs_for, wanted
 from ..scan import scan_folder
 from ..sessionstore import load_all_sessions, save_session, session_path
 from ..workspace import (REPO_ROOT, ensure_workspace, get_workspace,
                          set_workspace)
 from . import model
 
-STRING_KEYS = ["name", "data_dir", "dye", "experiment_type", "off_labels",
+STRING_KEYS = ["name", "data_dir", "file_prefix", "dye", "experiment_type",
+               "off_labels",
                "default_dc", "dose_unit", "dose_label", "dose_dc",
                "dose_exclude_files", "dose_exclude_dose", "truncate",
                "detrend_sec", "detrend_pct", "resp_dff", "resp_k",
                "min_area", "max_area"]
 BOOL_KEYS = ["dose_log", "detrend"]
+
+RUN_TEXT = "▶  Run analysis"
+RUNNING_TEXT = "Running…"
 
 PROTOCOL_HELP = ("One event per line:  time, label     (times are mm.ss: "
                  "5.30 = 5 min 30 s)\n"
@@ -54,6 +61,11 @@ def open_in_file_manager(path: Path) -> None:
 class MainWindow:
     def __init__(self, root: tk.Tk):
         self.root = root
+        self._reported: set[str] = set()
+        # Errors inside button callbacks are otherwise printed to a terminal
+        # nobody sees (e.g. when started from the desktop icon) and the button
+        # just seems to do nothing. Show them in the log and a dialog instead.
+        root.report_callback_exception = self._report_callback_exception
         root.title("Calcium analysis")
         root.geometry("1100x760")
         root.minsize(900, 600)
@@ -72,6 +84,9 @@ class MainWindow:
             self.vars[k] = tk.StringVar()
         for k in BOOL_KEYS:
             self.vars[k] = tk.BooleanVar()
+
+        self.out_vars: dict[str, tk.BooleanVar] = {
+            k: tk.BooleanVar(value=True) for k in sorted(all_keys())}
 
         self._build_ui()
         self._set_form(model.default_form())
@@ -108,15 +123,26 @@ class MainWindow:
         self.tabs.pack(fill="both", expand=True)
         self._build_setup_tab()
         self._build_protocol_tab()
+        self._build_results_tab()
         self._build_advanced_tab()
+
+        # "Run analysis" is the main action: first, bigger and bold; the other
+        # buttons are plain and sit after a divider.
+        self._run_font = tkfont.nametofont("TkDefaultFont").copy()
+        self._run_font.configure(weight="bold",
+                                 size=int(self._run_font.cget("size")) + 1)
+        ttk.Style(self.root).configure("Run.TButton", font=self._run_font,
+                                       padding=(18, 6))
 
         actions = ttk.Frame(right, padding=(0, 6))
         actions.pack(fill="x")
+        self.run_btn = ttk.Button(actions, text=RUN_TEXT, style="Run.TButton",
+                                  command=self._run)
+        self.run_btn.pack(side="left", padx=(0, 10))
+        ttk.Separator(actions, orient="vertical").pack(side="left", fill="y",
+                                                       padx=(0, 10))
         ttk.Button(actions, text="Save",
                    command=self._save).pack(side="left", padx=(0, 6))
-        self.run_btn = ttk.Button(actions, text="Run analysis",
-                                  command=self._run)
-        self.run_btn.pack(side="left", padx=(0, 6))
         ttk.Button(actions, text="Edit ROIs…",
                    command=self._edit_rois).pack(side="left", padx=(0, 6))
         ttk.Button(actions, text="View traces…",
@@ -154,12 +180,20 @@ class MainWindow:
                    command=self._scan).grid(row=0, column=2)
         self._row(tab, 1, "Data folder", folder)
 
-        self._row(tab, 2, "Dye", ttk.Combobox(
+        self._row(tab, 2, "File name prefix",
+                  ttk.Entry(tab, textvariable=v["file_prefix"]))
+        ttk.Label(tab, foreground="gray",
+                  text="Text before the file id in the file names, e.g. "
+                       "'20260623_' for 20260623_1.tif. Usually filled in by "
+                       "Scan; leave empty if files are just 1.tif, 2.tif…"
+                  ).grid(row=3, column=1, sticky="w")
+
+        self._row(tab, 4, "Dye", ttk.Combobox(
             tab, textvariable=v["dye"], values=list(DYES), state="readonly"))
         etype = ttk.Combobox(tab, textvariable=v["experiment_type"],
                              values=list(EXPERIMENT_TYPES), state="readonly")
         etype.bind("<<ComboboxSelected>>", lambda e: self._update_type_frames())
-        self._row(tab, 3, "Experiment type", etype)
+        self._row(tab, 5, "Experiment type", etype)
 
         # LIFU-only options
         self.lifu_frame = ttk.LabelFrame(tab, text="LIFU dose axis",
@@ -188,10 +222,12 @@ class MainWindow:
                        "analysed themselves (e.g. STOP, ISO if ISO is a "
                        "wash).").grid(row=1, column=0, columnspan=2,
                                       sticky="w")
-        self.type_row = 4
+        self.type_row = 6
         self._update_type_frames()
 
     def _update_type_frames(self):
+        if hasattr(self, "results_frame"):
+            self._rebuild_results()
         self.lifu_frame.grid_forget()
         self.chem_frame.grid_forget()
         frame = (self.lifu_frame if self.vars["experiment_type"].get() == "lifu"
@@ -236,6 +272,64 @@ class MainWindow:
                    command=self._copy_to_all).grid(row=2, column=0,
                                                    sticky="w")
 
+    def _build_results_tab(self):
+        tab = ttk.Frame(self.tabs, padding=12)
+        self.tabs.add(tab, text="Results")
+        ttk.Label(tab, foreground="gray", justify="left",
+                  text="Choose which figures and CSV files the analysis "
+                       "produces. The list depends on the experiment type "
+                       "(Setup tab)."
+                  ).pack(anchor="w")
+        bar = ttk.Frame(tab)
+        bar.pack(anchor="w", pady=(8, 4))
+        ttk.Button(bar, text="Select all",
+                   command=lambda: self._set_all_outputs(True)).pack(side="left")
+        ttk.Button(bar, text="Clear",
+                   command=lambda: self._set_all_outputs(False)).pack(
+                       side="left", padx=6)
+        self.results_frame = ttk.Frame(tab)
+        self.results_frame.pack(fill="both", expand=True, pady=(4, 0))
+        self._rebuild_results()
+
+    def _rebuild_results(self):
+        """Redraw the checkbox grid for the current experiment type."""
+        for w in self.results_frame.winfo_children():
+            w.destroy()
+        frame = self.results_frame
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(frame, text="Figure (png)").grid(row=0, column=1, padx=10)
+        ttk.Label(frame, text="Table (csv)").grid(row=0, column=2, padx=10)
+        bold = tkfont.nametofont("TkDefaultFont").copy()
+        bold.configure(weight="bold")
+        self._results_font = bold                 # keep a reference
+
+        r = 1
+        group = None
+        for spec in specs_for(self.vars["experiment_type"].get()):
+            if spec.group != group:
+                group = spec.group
+                ttk.Label(frame, text=group, font=bold).grid(
+                    row=r, column=0, sticky="w", pady=(10, 2))
+                r += 1
+            ttk.Label(frame, text=spec.label).grid(row=r, column=0,
+                                                   sticky="w", padx=(16, 0))
+            for col, fmt in ((1, "png"), (2, "csv")):
+                if fmt in spec.formats:
+                    ttk.Checkbutton(
+                        frame, variable=self.out_vars[f"{spec.name}.{fmt}"]
+                    ).grid(row=r, column=col)
+                else:
+                    ttk.Label(frame, text="–", foreground="gray").grid(
+                        row=r, column=col)
+            if spec.note:
+                ttk.Label(frame, text=spec.note, foreground="gray").grid(
+                    row=r, column=3, sticky="w", padx=10)
+            r += 1
+
+    def _set_all_outputs(self, on: bool):
+        for key in applicable_keys(self.vars["experiment_type"].get()):
+            self.out_vars[key].set(on)
+
     def _build_advanced_tab(self):
         tab = ttk.Frame(self.tabs, padding=12)
         self.tabs.add(tab, text="Advanced")
@@ -272,11 +366,18 @@ class MainWindow:
         form = {k: self.vars[k].get() for k in STRING_KEYS + BOOL_KEYS}
         form["file_ids"] = list(self.file_ids)
         form["protocols"] = dict(self.protocols)
+        form["outputs"] = [k for k, v in self.out_vars.items() if v.get()]
         return form
 
     def _set_form(self, form: dict):
         for k in STRING_KEYS + BOOL_KEYS:
             self.vars[k].set(form[k])
+        # Outputs that do not apply to this experiment type stay ticked, so
+        # they are ticked if the user switches type.
+        chosen = set(form["outputs"])
+        applicable = applicable_keys(form["experiment_type"])
+        for key, var in self.out_vars.items():
+            var.set(key in chosen if key in applicable else True)
         self.file_ids = list(form["file_ids"])
         self.protocols = dict(form["protocols"])
         self._cur_fid = None
@@ -389,6 +490,11 @@ class MainWindow:
 
     def _scan(self):
         folder = self.vars["data_dir"].get().strip()
+        if not folder:
+            messagebox.showinfo("Scan", "Choose the data folder first "
+                                        "(Browse…).")
+            return
+        self._log(f"scanning {folder} …")
         try:
             result = scan_folder(folder)
         except (NotADirectoryError, OSError) as e:
@@ -423,15 +529,35 @@ class MainWindow:
         self._refresh_sessions(select=cfg.name)
         if not quiet:
             self._log(f"saved {path}")
+            missing = model.missing_files(cfg)
+            if missing:
+                self._log(f"warning: {len(missing)} data file(s) not found, "
+                          f"e.g. {missing[0]} (check the file name prefix)")
         return cfg.name
 
     # ----------------------------------------------------------------- jobs
     def _name_for_job(self) -> str | None:
-        """Name of the session to run: save first unless it is built-in."""
+        """Name of the session to run: save first unless it is built-in.
+
+        Returns None (after telling the user) when the data files are missing.
+        """
         name = self.vars["name"].get().strip()
-        if self._is_builtin(name):
-            return name
-        return self._save(quiet=True)
+        if not self._is_builtin(name):
+            name = self._save(quiet=True)
+            if name is None:
+                return None
+        cfg = self.sessions.get(name)
+        missing = model.missing_files(cfg) if cfg else []
+        if missing:
+            shown = ", ".join(missing[:6]) + (" …" if len(missing) > 6 else "")
+            messagebox.showerror(
+                "Data files not found",
+                f"{len(missing)} file(s) expected in\n{cfg.data_dir}\n"
+                f"were not found:\n{shown}\n\n"
+                f"Check the data folder and the 'File name prefix' in the "
+                f"Setup tab.")
+            return None
+        return name
 
     def _selected_fid(self) -> str | None:
         if self._cur_fid is None:
@@ -458,6 +584,7 @@ class MainWindow:
         if analysis:
             self._analysis_running = True
             self.run_btn.state(["disabled"])
+            self.run_btn.config(text=RUNNING_TEXT)
 
         def reader():
             for line in proc.stdout:
@@ -481,6 +608,7 @@ class MainWindow:
                     if analysis:
                         self._analysis_running = False
                         self.run_btn.state(["!disabled"])
+                        self.run_btn.config(text=RUN_TEXT)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_jobs)
@@ -503,8 +631,17 @@ class MainWindow:
     def _view(self):
         fid = self._selected_fid()
         name = self._name_for_job() if fid else None
-        if name:
-            self._start_job(f"viewer: {name} file {fid}", "view.py", name, fid)
+        if not name:
+            return
+        cfg = self.sessions.get(name)
+        if cfg is not None and not wanted(cfg, "traces.csv"):
+            messagebox.showinfo(
+                "View traces",
+                "This session does not produce the per-cell traces CSV that "
+                "the viewer reads.\n\nTick 'Per-cell traces' in the Results "
+                "tab and run the analysis again.")
+            return
+        self._start_job(f"viewer: {name} file {fid}", "view.py", name, fid)
 
     def _open_results(self):
         name = self.vars["name"].get().strip()
@@ -515,6 +652,21 @@ class MainWindow:
         open_in_file_manager(Path(cfg.out_dir))
 
     # ------------------------------------------------------------------ log
+    def _report_callback_exception(self, exc, val, tb):
+        text = "".join(traceback.format_exception(exc, val, tb))
+        print(text, file=sys.stderr)
+        self._log("ERROR (the app hit a bug; please send this text):\n" + text)
+        key = f"{exc.__name__}: {val}"
+        if key not in self._reported:             # one dialog per distinct error
+            self._reported.add(key)
+            try:
+                messagebox.showerror(
+                    "Unexpected error",
+                    f"{key}\n\nThe details are in the log pane at the "
+                    f"bottom of the window.")
+            except Exception:
+                pass
+
     def _log(self, text: str):
         self.log.config(state="normal")
         self.log.insert("end", text + "\n")

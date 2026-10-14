@@ -22,7 +22,7 @@ from matplotlib import cm
 from matplotlib.widgets import Button, Slider
 from scipy import ndimage as ndi
 
-from .dyes import DYES, load_recording
+from .dyes import DYES, load_session_recording
 from .protocol import build_epochs
 from .segmentation import load_or_segment
 
@@ -36,9 +36,7 @@ class TraceViewer:
         # frames = the stack shown and segmented: raw frames for Calbryte,
         # the F380 stack for Fura-2 (same image the pipeline segments on).
         self.ratiometric = DYES[cfg.dye].ratiometric
-        _stacks, frames, _wf, t_s = load_recording(
-            DYES[cfg.dye], cfg.data_dir, self.fid,
-            cfg.truncate_min.get(self.fid))
+        _stacks, frames, _wf, t_s = load_session_recording(cfg, self.fid)
         del _stacks
         self.frames = frames
         self.t_s = t_s

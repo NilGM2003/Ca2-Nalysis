@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from calcium.gui import model                         # noqa: E402
+from calcium.outputs import applicable_keys            # noqa: E402
 from calcium.scan import ScanResult                   # noqa: E402
 from calcium.workspace import results_dir, rois_dir   # noqa: E402
 
@@ -21,6 +22,7 @@ def good_form(tmp, **over):
     f.update(name="20261001", data_dir=str(data), dye="fura2",
              experiment_type="chemical", off_labels="STOP, ISO",
              file_ids=["001", "002"],
+             outputs=sorted(applicable_keys("chemical")),
              protocols={"001": "2, ISO\n4, Yoda1\n6, ISO",
                         "002": "2, ISO\n5, Yoda1\n8, ISO"})
     f.update(over)
@@ -122,6 +124,82 @@ class BuildConfig(unittest.TestCase):
             form = good_form(tmp, min_area="15.5")
             with self.assertRaisesRegex(model.FormError, "whole number"):
                 model.build_config(form, Path(tmp) / "ws")
+
+
+class Outputs(unittest.TestCase):
+    def test_everything_ticked_means_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            form = good_form(tmp)                       # chemical
+            form["outputs"] = sorted(applicable_keys("chemical"))
+            self.assertIsNone(model.build_config(form, Path(tmp) / "ws").outputs)
+
+    def test_subset_is_kept_and_wrong_type_keys_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            form = good_form(tmp)                       # chemical
+            form["outputs"] = ["condition_summary.csv", "cells.png",
+                               "dose_pooled.png"]        # last one is LIFU-only
+            cfg = model.build_config(form, Path(tmp) / "ws")
+            self.assertEqual(cfg.outputs, {"condition_summary.csv", "cells.png"})
+
+    def test_nothing_ticked_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            form = good_form(tmp)
+            form["outputs"] = ["dose_pooled.png"]        # nothing that applies
+            with self.assertRaisesRegex(model.FormError, "at least one"):
+                model.build_config(form, Path(tmp) / "ws")
+
+    def test_form_roundtrip_with_subset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            form = good_form(tmp)
+            form["outputs"] = ["metrics.csv", "traces.csv"]
+            cfg = model.build_config(form, ws)
+            again = model.build_config(model.form_from_config(cfg), ws)
+            self.assertEqual(cfg, again)
+
+    def test_default_form_ticks_all_lifu_outputs(self):
+        self.assertEqual(set(model.default_form()["outputs"]),
+                         applicable_keys("lifu"))
+
+    def test_form_from_old_session_lists_everything_that_applies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = model.build_config(good_form(tmp), Path(tmp) / "ws")   # None
+            self.assertEqual(set(model.form_from_config(cfg)["outputs"]),
+                             applicable_keys("chemical"))
+
+
+class FilePrefix(unittest.TestCase):
+    def test_prefix_roundtrip_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            form = good_form(tmp, dye="calbryte", experiment_type="lifu",
+                             off_labels="STOP", file_prefix="20260623_",
+                             file_ids=["1", "2"])
+            form["protocols"] = {"1": "2, 1Hz@DC20\n8, STOP",
+                                 "2": "2, 10Hz@DC20\n8, STOP"}
+            cfg = model.build_config(form, ws)
+            self.assertEqual(cfg.file_prefix, "20260623_")
+            self.assertEqual(cfg, model.build_config(model.form_from_config(cfg), ws))
+
+            self.assertEqual(model.missing_files(cfg),
+                             ["20260623_1.TIF", "20260623_2.TIF"])
+            data = Path(cfg.data_dir)
+            (data / "20260623_1.tif").write_bytes(b"")
+            self.assertEqual(model.missing_files(cfg), ["20260623_2.TIF"])
+            (data / "20260623_2.TIF").write_bytes(b"")
+            self.assertEqual(model.missing_files(cfg), [])
+
+    def test_prefix_with_slash_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            form = good_form(tmp, file_prefix="a/b_")
+            with self.assertRaisesRegex(model.FormError, "prefix"):
+                model.build_config(form, Path(tmp) / "ws")
+
+    def test_apply_scan_sets_prefix(self):
+        form = model.default_form()
+        scan = ScanResult(Path("."), "calbryte", ["1", "2"], [], "20260623_")
+        model.apply_scan(form, scan)
+        self.assertEqual(form["file_prefix"], "20260623_")
 
 
 class FormOperations(unittest.TestCase):

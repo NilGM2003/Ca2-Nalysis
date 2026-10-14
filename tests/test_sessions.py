@@ -13,8 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from calcium.config import SessionConfig            # noqa: E402
-from calcium.dyes import find_tif                   # noqa: E402
-from calcium.scan import scan_folder                # noqa: E402
+from calcium.dyes import DYES, find_tif             # noqa: E402
+from calcium.scan import scan_folder, split_common_prefix   # noqa: E402
 from calcium.sessionstore import (                  # noqa: E402
     load_all_sessions, load_session, save_session, session_path,
     validate_session_name)
@@ -48,6 +48,20 @@ class ConfigRoundTrip(unittest.TestCase):
             self.assertEqual(cfg, back)
             self.assertIsInstance(back.off_labels, set)
             self.assertIsInstance(back.protocol["001"][0], tuple)
+
+    def test_outputs_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for outs in (None, {"traces.csv", "dose_pooled.png"}):
+                cfg = make_cfg(tmp, outputs=outs, experiment_type="lifu",
+                               dye="calbryte", off_labels={"STOP"})
+                back = SessionConfig.from_dict(json.loads(json.dumps(cfg.to_dict())))
+                self.assertEqual(cfg, back)
+                self.assertEqual(back.outputs, outs)
+
+    def test_unknown_output_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "unknown output"):
+                make_cfg(tmp, outputs={"dose_pooled.png", "nonsense.csv"})
 
     def test_unknown_setting_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,6 +201,42 @@ class Scan(unittest.TestCase):
     def test_not_a_folder(self):
         with self.assertRaises(NotADirectoryError):
             scan_folder(Path(tempfile.gettempdir()) / "definitely-not-here-xyz")
+
+    def test_shared_prefix_is_split_off(self):
+        r = scan_folder(self.folder("20260623_1.tif", "20260623_10.tif",
+                                    "20260623_2.tif"))
+        self.assertEqual((r.dye, r.prefix, r.file_ids),
+                         ("calbryte", "20260623_", ["1", "2", "10"]))
+
+    def test_single_file_with_prefix(self):
+        r = scan_folder(self.folder("20260623_1.tif"))
+        self.assertEqual((r.prefix, r.file_ids), ("20260623_", ["1"]))
+
+    def test_prefix_with_fura2_pairs(self):
+        r = scan_folder(self.folder("20261001_001_340.TIF", "20261001_001_380.TIF",
+                                    "20261001_002_340.TIF", "20261001_002_380.TIF"))
+        self.assertEqual((r.dye, r.prefix, r.file_ids),
+                         ("fura2", "20261001_", ["001", "002"]))
+
+    def test_no_prefix_without_a_separator(self):
+        r = scan_folder(self.folder("001_340.TIF", "001_380.TIF",
+                                    "002_340.TIF", "002_380.TIF"))
+        self.assertEqual((r.prefix, r.file_ids), ("", ["001", "002"]))
+
+    def test_split_common_prefix_edge_cases(self):
+        self.assertEqual(split_common_prefix(["a_1", "a_2"]), ("a_", ["1", "2"]))
+        self.assertEqual(split_common_prefix(["1", "2", "10"]), ("", ["1", "2", "10"]))
+        self.assertEqual(split_common_prefix(["001", "002"]), ("", ["001", "002"]))
+        self.assertEqual(split_common_prefix(["x_", "x_1"]), ("", ["x_", "x_1"]))
+        self.assertEqual(split_common_prefix(["Hek 1", "Hek 2"]), ("Hek ", ["1", "2"]))
+        self.assertEqual(split_common_prefix([]), ("", []))
+
+    def test_dye_paths_use_the_prefix(self):
+        folder = self.folder("20260623_1.tif", "exp_001_340.TIF", "exp_001_380.TIF")
+        self.assertEqual(DYES["calbryte"].paths(folder, "1", "20260623_")[0].name,
+                         "20260623_1.tif")
+        self.assertEqual([p.name for p in DYES["fura2"].paths(folder, "001", "exp_")],
+                         ["exp_001_340.TIF", "exp_001_380.TIF"])
 
     def test_find_tif_ignores_case(self):
         folder = self.folder("sample_340.tif")

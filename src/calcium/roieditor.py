@@ -30,8 +30,7 @@ from matplotlib.path import Path as MplPath
 from matplotlib.widgets import Button, LassoSelector
 from scipy import ndimage as ndi
 
-from .io import load_tif, truncate
-from .dyes import DYES, load_recording
+from .dyes import load_session_recording
 from .segmentation import (compact_labels, load_or_segment, manual_roi_path,
                            segment_cells)
 
@@ -44,9 +43,9 @@ class ROIEditor:
         self.cfg = cfg
         self.fid = str(fid)
 
-        _stacks, frames, _wf, _t = load_recording(DYES[cfg.dye], cfg.data_dir, self.fid)
-        if self.fid in cfg.truncate_min:
-            frames, _t = truncate(frames, _t, cfg.truncate_min[self.fid])
+        # raw frames (Calbryte) or the F380 stack (Fura-2), truncated as the
+        # session says -- the same image the pipeline segments on
+        _stacks, frames, _wf, _t = load_session_recording(cfg, self.fid)
         self.frames = frames
         self.T, self.H, self.W = frames.shape
 
